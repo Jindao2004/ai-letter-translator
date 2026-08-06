@@ -132,7 +132,25 @@ def github_request(url):
 
 def get_latest_release(owner, repo):
     url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
-    return json.loads(github_request(url).decode("utf-8"))
+    try:
+        return json.loads(github_request(url).decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        # GitHub 对“没有 Release”和“仓库不存在/无权访问”都返回 404，
+        # 再检查一次仓库本身，给用户显示真正的原因。
+        repo_url = f"https://api.github.com/repos/{owner}/{repo}"
+        try:
+            github_request(repo_url)
+        except urllib.error.HTTPError as repo_exc:
+            if repo_exc.code == 404:
+                raise ValueError(
+                    "找不到这个 GitHub 仓库。请检查地址是否正确，并确认仓库是 Public（公开）。"
+                ) from repo_exc
+            raise
+        raise ValueError(
+            "仓库已经找到，但还没有已发布的 GitHub Release。请在仓库的 Releases 页面创建并发布版本，例如 v1.0.0。"
+        ) from exc
 
 
 def download_release(release):
@@ -364,13 +382,18 @@ def call_ai(config, messages, max_tokens=12000):
 def friendly_error(exc):
     if isinstance(exc, urllib.error.HTTPError):
         try:
-            detail = json.loads(exc.read().decode("utf-8")).get("error", {}).get("message", "")
+            data = json.loads(exc.read().decode("utf-8"))
+            error = data.get("error") or {}
+            detail = error.get("message") or data.get("message") or exc.reason or "未知错误"
         except Exception:
-            detail = ""
-        return f"接口返回错误 {exc.code}。{detail}"
+            detail = exc.reason or "未知错误"
+        if exc.code == 403:
+            return f"GitHub 拒绝了请求（403）：{detail}。请稍后重试，可能触发了访问频率限制。"
+        return f"服务器返回错误 {exc.code}：{detail}"
     if isinstance(exc, urllib.error.URLError):
         return f"无法连接接口：{exc.reason}"
-    return f"请求失败：{exc}"
+    detail = str(exc).strip()
+    return f"请求失败：{detail or type(exc).__name__}"
 
 
 class App(tk.Tk):
